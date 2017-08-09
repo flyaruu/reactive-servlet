@@ -21,12 +21,8 @@ public class Servlets {
 
 	private final static Logger logger = LoggerFactory.getLogger(Servlets.class);
 
-//	protected static final int BUFFER_SIZE = 8192;
-
 	private enum MODE {
-		INITIAL,
-		BACKPRESSURED,
-		FLOWING,
+		NORMAL,
 		FINISHED,
 		ERROR
 	}
@@ -37,11 +33,16 @@ public class Servlets {
 	
 	public static Flowable<byte[]> createFlowable(AsyncContext asc, int bufferSize) throws IOException {
 		final  AtomicLong readyReads = new AtomicLong(0);
+		final  AtomicLong dataEmitted = new AtomicLong(0);
+		final  AtomicLong dataRequested = new AtomicLong(0);
+		final  AtomicLong bytesEmitted = new AtomicLong(0);
+		final  AtomicLong bytesRead = new AtomicLong(0);
 		ServletInputStream in = asc.getRequest().getInputStream();
 		final AtomicBoolean isReady = new AtomicBoolean(false);
+		final AtomicBoolean isInitialized = new AtomicBoolean(false);
 		return new Flowable<byte[]>() {
 
-			volatile MODE mode = MODE.INITIAL;
+			volatile MODE mode = MODE.NORMAL;
 			
 			private Subscription subscription;
 			@Override
@@ -51,7 +52,12 @@ public class Servlets {
 					@Override
 					public void request(long n) {
 						readyReads.addAndGet(n);
-						mode = pollReadyData(in, s,mode);
+						logger.info("More requests: {} total requested: {} emitted: {} diff: {}",readyReads.get(),dataRequested.get(),dataEmitted.get(),(dataRequested.get()-dataEmitted.get()));
+						// only start polling once an initial onDataAvailable has been called
+						dataRequested.addAndGet(n);
+						if(isInitialized.get()) {
+							mode = pollReadyData(in, s,mode);							
+						}
 					}
 					
 					@Override
@@ -67,14 +73,19 @@ public class Servlets {
 
 					@Override
 					public void onAllDataRead() throws IOException {
-						System.err.println("All data read");
+						logger.debug(">>>>>>>>>All data read");
 						s.onComplete();
 					}
 
 					@Override
 					public void onDataAvailable() throws IOException {
+						logger.trace("Data ready!");
+						isInitialized.set(true);
 						isReady.set(true);
 						mode = pollReadyData(in, s,mode);
+//						if(mode==MODE.FINISHED) {
+//							s.onComplete();
+//						}
 					}
 
 					@Override
@@ -95,31 +106,38 @@ public class Servlets {
 						return MODE.FINISHED;
 					case ERROR:
 						throw new RuntimeException("Cant re-poll a failed flowable");
-					case INITIAL:
-					case BACKPRESSURED:
-					case FLOWING:
+					case NORMAL:
 						while(in.isReady()) {
 						    if(in.isFinished()) {
-						    	System.err.println("Finished!");
+						    	logger.info("Finished!");
 						    	break;
 						    }
 						    long reads = readyReads.get();
+//						    logger.info("-> Left: {} readyReads: {}",(dataRequested.get()-dataEmitted.get()),readyReads.get());
 						    if(reads<=0) {
-						    	return MODE.BACKPRESSURED;
+						    	logger.info("backpressuring. Data emitted: {} requested: {} ready reads: {}",dataEmitted.get(), dataRequested.get(),readyReads.get());
+						    	return MODE.NORMAL;
 						    }						    
 							int len = in.read(buf);
 						    if(len < 0) {
 						    	return MODE.FINISHED;
 						    }
+						    long totalRead = bytesRead.addAndGet(len);
 						    byte[] copy = Arrays.copyOf(buf, len);
 						    readyReads.decrementAndGet();
 						    s.onNext(copy);
+						    long ee = dataEmitted.incrementAndGet();
+						    long bts = bytesEmitted.addAndGet(copy.length);
+						    logger.trace("Emitted: {} byte: {}",ee,bts);
 						}
 						isReady.set(false);
+						logger.debug("Data no (longer) ready.");
 						if(in.isFinished()) {
+							logger.debug("Request finished: {} bytes",bytesEmitted.get());
+//							in.close();
 							return MODE.FINISHED;
 						}
-						return MODE.FLOWING;
+						return MODE.NORMAL;
 					}
 				} catch (IOException e) {
 					try {

@@ -3,8 +3,8 @@
          xsi:schemaLocation="http://xmlns.jcp.org/xml/ns/javaee
 		 http://xmlns.jcp.org/xml/ns/javaee/web-app_3_1.xsd"
          version="3.1">
-   <display-name>Archetype Created Web Application</display-name>
-    <servlet>
+  <display-name>Web Application</display-name>
+  <servlet>
     <servlet-name>reactiveServlet</servlet-name>
     <servlet-class>nl.codemonkey.reactiveservlet.example.ReactiveServlet</servlet-class>
 	<async-supported>true</async-supported>
@@ -12,6 +12,6 @@
 
   <servlet-mapping>
     <servlet-name>reactiveServlet</servlet-name>
-    <url-pattern>reactive</url-pattern>
+    <url-pattern>/reactive</url-pattern>
   </servlet-mapping>
 </web-app>

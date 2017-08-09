@@ -25,7 +25,10 @@ public class ReactiveSubscriber implements Subscriber<byte[]>, WriteListener {
 	final AtomicBoolean completed = new AtomicBoolean(false);
 	final AtomicBoolean outputReady = new AtomicBoolean(false);
 	
-	final AtomicLong flushQueue = new AtomicLong();
+	final AtomicLong totalWritten = new AtomicLong();
+	final AtomicLong totalRequested = new AtomicLong();
+	final AtomicLong bytesWritten = new AtomicLong();
+//	final AtomicLong flushQueue = new AtomicLong();
 
 	private final AtomicBoolean isInitial = new AtomicBoolean(true);
 	final Queue<byte[]> outputQueue = new ConcurrentLinkedQueue<byte[]>();
@@ -37,53 +40,53 @@ public class ReactiveSubscriber implements Subscriber<byte[]>, WriteListener {
 		out = context.getResponse().getOutputStream();
 	}
 	
-	private synchronized void flushQueue() throws IOException {
+	private long flushQueue() throws IOException {
 		if(!outputReady.get()) {
-			return;
+			return 0;
 		}
-		int writeCount = 0;
+		long writeCount = 0;
 		while (!outputQueue.isEmpty()) {
 			boolean rd = out.isReady();
 			if(!rd) {
 				outputReady.set(false);
-				System.err.println("Breaking, output no longer readyå");
-				return;
+				logger.info("Breaking, output no longer ready Queue size: {}. Total written: {} bytes: {} requested: {}",outputQueue.size(), totalWritten.get(),bytesWritten.get(), totalRequested.get());
+				return writeCount;
 			}
 			byte[] element = outputQueue.poll();
-//			byteWritten.addAndGet(element.length);
+			bytesWritten.addAndGet(element.length);
 			out.write(element);
-//			elementsWritten.incrementAndGet();
 			writeCount++;
 		}
 		if (done.get() && !completed.get() && outputQueue.isEmpty()) {
-			System.err.println("Done switch trapped and write complete, closing context.");
+//			System.err.println("Done switch trapped and write complete, closing context.");
 			completed.compareAndSet(false, true);
 			context.complete();
 		}
-		if(writeCount>0) {
-			flushQueue.addAndGet(writeCount);
+//		if(writeCount>0) {
+//			long total = totalWritten.addAndGet(writeCount);
+//			logger.debug("Written from flushQueue: "+total);
+//			flushQueue.addAndGet(writeCount);
 //			long l = elementsRequested.addAndGet(writeCount);
-		}
+//		}
+		return writeCount;
 	}
 
 	@Override
 	public void onComplete() {
 		try {
-//			System.err.println("Input completed. Setting done: "+done.get()+" queue size: "+outputQueue.size()+" elements received: "+elementsReceived.get()+" bytes received: "+bytesReceived.get());
+			logger.info("Input completed. Setting done: {} queue size: {} bytes written {}",done.get(),outputQueue.size(),bytesWritten.get());
 			done.compareAndSet(false,true);
-//			System.err.println("Write Done: "+done.get());
+			logger.info("Write Done: "+done.get());
 			if(!outputQueue.isEmpty()) {
-				flushQueue();
+				long written = flushQueue();
 				return;
 			}
 			final boolean ready = out.isReady();
-			System.err.println("Ready? "+ready);
 			if(ready && outputQueue.isEmpty()) {
-//				System.err.println(">onCompleted done, queue empty and still ready, so closing context:");
 				completed.compareAndSet(false, true);
 				context.complete();
 			} else {
-//				System.err.println("onCompleted done, but not ready, so deferring complete to onWritePossible");
+				//	onCompleted done, but not ready, so deferring complete to onWritePossible
 			}
 		
 		} catch (Exception e) {
@@ -93,21 +96,26 @@ public class ReactiveSubscriber implements Subscriber<byte[]>, WriteListener {
 
 	@Override
 	public void onError(Throwable e) {
-		logger.error("Error: ", e);
+		logger.error("Servlet Error: ", e);
 		context.complete();
 
 	}
 
 	@Override
-	public void onNext(byte[] b) {
+	public synchronized void onNext(byte[] b) {
 		try {
 			outputQueue.offer(b);
-			flushQueue();
-			long written = flushQueue.getAndSet(0);
+			long written =  flushQueue();
 			if(written > 0) {
+				totalRequested.addAndGet(written);
 				this.subscription.request(written);
+				logger.info("Requesting: {} total requested: {}",written,totalRequested.get());
 			}
+			long total = totalWritten.addAndGet(written);
+//			logger.debug("Written from onNext: {} bytes: {}",total,bytesWritten.get());
+
 		} catch (Exception e) {
+			logger.error("Error: ", e);
 			onError(e);
 			if(this.subscription!=null) {
 				this.subscription.cancel();
@@ -119,21 +127,31 @@ public class ReactiveSubscriber implements Subscriber<byte[]>, WriteListener {
 	public void onSubscribe(Subscription s) {
 		this.subscription = s;
 		out.setWriteListener(this);
-		subscription.request(INITIAL_REQUEST);
+//		System.err.println("Request initial");
+//		subscription.request(INITIAL_REQUEST);
 	}
 	
 	@Override
-	public void onWritePossible() throws IOException {
+	public synchronized void onWritePossible() throws IOException {
+		logger.debug("Entering onWritePossible");
 		if(isInitial.get()) {
 			isInitial.set(false);
+			subscription.request(INITIAL_REQUEST);
+			totalRequested.addAndGet(INITIAL_REQUEST);
+
 		}
 		outputReady.set(true);
-		flushQueue();
-		long written = flushQueue.getAndSet(0);
+		long written =  flushQueue();
 		if(written > 0) {
 			this.subscription.request(written);
+			totalRequested.addAndGet(written);
+			logger.info("Requesting from possible: {} total requested: {}",written,totalRequested.get());
+
 		}
-		subscription.request(1);
+//		subscription.request(10);
+//		totalRequested.addAndGet(10);
+//		logger.info("Written from onWritePossible: {} bytes: {} total requested: {}",this.totalWritten.get(), this.bytesWritten.get(),totalRequested.get());
+//		logger.info("Exiting onWritePossible. Bytes written: {}",bytesWritten.get());
 	}
 
 }
